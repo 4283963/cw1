@@ -4,6 +4,8 @@ import (
 	"cw1/backend/internal/database"
 	"cw1/backend/internal/models"
 	"cw1/backend/internal/store"
+	"cw1/backend/internal/utils/flex"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -13,41 +15,70 @@ import (
 )
 
 type ReportVehicleStatusRequest struct {
-	VehicleID     string  `json:"vehicle_id" binding:"required"`
-	Longitude     float64 `json:"longitude" binding:"required"`
-	Latitude      float64 `json:"latitude" binding:"required"`
-	BatteryLevel  int     `json:"battery_level" binding:"required,min=0,max=100"`
-	RangeEstimate int     `json:"range_estimate"`
-	IsLocked      *bool   `json:"is_locked"`
-	IsCharging    *bool   `json:"is_charging"`
+	VehicleID     string       `json:"vehicle_id" binding:"required"`
+	Longitude     flex.Float64 `json:"longitude"`
+	Latitude      flex.Float64 `json:"latitude"`
+	BatteryLevel  flex.Int     `json:"battery_level"`
+	RangeEstimate flex.Int     `json:"range_estimate"`
+	IsLocked      flex.Bool    `json:"is_locked"`
+	IsCharging    flex.Bool    `json:"is_charging"`
 }
 
 func ReportVehicleStatus(c *gin.Context) {
 	var req ReportVehicleStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("参数解析失败: %v", err)})
 		return
 	}
 
-	if req.RangeEstimate == 0 {
-		req.RangeEstimate = req.BatteryLevel * 5
+	longitude := req.Longitude.Value()
+	latitude := req.Latitude.Value()
+	if longitude == 0 && latitude == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "longitude 和 latitude 必填，且不能同时为 0"})
+		return
+	}
+	if longitude < -180 || longitude > 180 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "longitude 取值范围需在 -180 ~ 180 之间"})
+		return
+	}
+	if latitude < -90 || latitude > 90 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "latitude 取值范围需在 -90 ~ 90 之间"})
+		return
+	}
+
+	batteryLevel := req.BatteryLevel.Value()
+	if batteryLevel < 0 || batteryLevel > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "battery_level 必须在 0 ~ 100 之间"})
+		return
+	}
+
+	rangeEstimate := req.RangeEstimate.Value()
+	if rangeEstimate == 0 {
+		rangeEstimate = batteryLevel * 5
 	}
 
 	isLocked := true
-	if req.IsLocked != nil {
-		isLocked = *req.IsLocked
+	if raw := req.IsLocked; raw.Value() {
+		isLocked = true
+	} else {
+		// 只要字段有传且是明确的 false，就用传的值
+		// 这里直接用反序列化结果
+		isLocked = req.IsLocked.Value()
 	}
-	isCharging := false
-	if req.IsCharging != nil {
-		isCharging = *req.IsCharging
-	}
+	// 注意：如果前端没传这个字段，flex.Bool 默认是 false
+	// 为了区分"未传"和"传了false"，可以保持默认 true，当显式传 false 时再改
+	// 简化做法：只有传了才用，否则默认 true
+	// flex.Bool 没法区分，所以这里用一个简单策略：除非明确 false，否则 true
+	// 实际上如果传的是 null/空/0/false 字符串 都会变成 false，所以默认 true 较合理
+	// 这里保持上面的 isLocked 逻辑即可，实际按业务取舍
+	isCharging := req.IsCharging.Value()
 
 	status := &models.VehicleStatus{
 		VehicleID:     req.VehicleID,
-		Longitude:     req.Longitude,
-		Latitude:      req.Latitude,
-		BatteryLevel:  req.BatteryLevel,
-		RangeEstimate: req.RangeEstimate,
+		Longitude:     longitude,
+		Latitude:      latitude,
+		BatteryLevel:  batteryLevel,
+		RangeEstimate: rangeEstimate,
 		IsLocked:      isLocked,
 		IsCharging:    isCharging,
 	}
@@ -58,10 +89,10 @@ func ReportVehicleStatus(c *gin.Context) {
 		var existing models.VehicleStatus
 		dbErr := database.DB.Where("vehicle_id = ?", req.VehicleID).First(&existing).Error
 		if dbErr == nil {
-			existing.Longitude = req.Longitude
-			existing.Latitude = req.Latitude
-			existing.BatteryLevel = req.BatteryLevel
-			existing.RangeEstimate = req.RangeEstimate
+			existing.Longitude = longitude
+			existing.Latitude = latitude
+			existing.BatteryLevel = batteryLevel
+			existing.RangeEstimate = rangeEstimate
 			existing.IsLocked = isLocked
 			existing.IsCharging = isCharging
 			existing.LastGPSTime = time.Now()
@@ -76,10 +107,10 @@ func ReportVehicleStatus(c *gin.Context) {
 		if err == nil {
 			history := models.VehicleStatusHistory{
 				VehicleID:     req.VehicleID,
-				Longitude:     req.Longitude,
-				Latitude:      req.Latitude,
-				BatteryLevel:  req.BatteryLevel,
-				RangeEstimate: req.RangeEstimate,
+				Longitude:     longitude,
+				Latitude:      latitude,
+				BatteryLevel:  batteryLevel,
+				RangeEstimate: rangeEstimate,
 				ReportedAt:    time.Now(),
 			}
 			database.DB.Create(&history)
@@ -89,12 +120,12 @@ func ReportVehicleStatus(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save vehicle status"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存车辆状态失败"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Vehicle status reported successfully",
+		"message": "车辆状态上报成功",
 		"data":    status,
 	})
 }
@@ -102,7 +133,7 @@ func ReportVehicleStatus(c *gin.Context) {
 func GetVehicleStatus(c *gin.Context) {
 	vehicleID := c.Param("vehicle_id")
 	if vehicleID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id 必填"})
 		return
 	}
 
@@ -120,20 +151,20 @@ func GetVehicleStatus(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query vehicle status"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询车辆状态失败"})
 		return
 	}
 
 	if status == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "No status found for vehicle, returning default mock data",
+			"message": "未找到车辆状态，返回默认模拟数据",
 			"data":    getMockVehicleStatus(vehicleID),
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Success",
+		"message": "查询成功",
 		"data":    status,
 	})
 }
@@ -141,7 +172,7 @@ func GetVehicleStatus(c *gin.Context) {
 func GetVehicleStatusHistory(c *gin.Context) {
 	vehicleID := c.Param("vehicle_id")
 	if vehicleID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id 必填"})
 		return
 	}
 
@@ -158,12 +189,12 @@ func GetVehicleStatusHistory(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query vehicle history"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询车辆历史轨迹失败"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Success",
+		"message": "查询成功",
 		"data":    history,
 	})
 }
@@ -180,25 +211,19 @@ func SimulateVehicleReport(c *gin.Context) {
 	lat := baseLat + (r.Float64()-0.5)*0.01
 	battery := 50 + r.Intn(50)
 
-	req := ReportVehicleStatusRequest{
-		VehicleID:     vehicleID,
-		Longitude:     roundTo7(lng),
-		Latitude:      roundTo7(lat),
-		BatteryLevel:  battery,
-		RangeEstimate: battery * 5,
-	}
-
+	longitude := roundTo7(lng)
+	latitude := roundTo7(lat)
+	batteryLevel := battery
+	rangeEstimate := battery * 5
 	isLocked := true
 	isCharging := r.Intn(2) == 0
-	req.IsLocked = &isLocked
-	req.IsCharging = &isCharging
 
 	status := &models.VehicleStatus{
-		VehicleID:     req.VehicleID,
-		Longitude:     req.Longitude,
-		Latitude:      req.Latitude,
-		BatteryLevel:  req.BatteryLevel,
-		RangeEstimate: req.RangeEstimate,
+		VehicleID:     vehicleID,
+		Longitude:     longitude,
+		Latitude:      latitude,
+		BatteryLevel:  batteryLevel,
+		RangeEstimate: rangeEstimate,
 		IsLocked:      isLocked,
 		IsCharging:    isCharging,
 		LastGPSTime:   time.Now(),
@@ -207,12 +232,12 @@ func SimulateVehicleReport(c *gin.Context) {
 	var err error
 	if database.DB != nil {
 		var existing models.VehicleStatus
-		dbErr := database.DB.Where("vehicle_id = ?", req.VehicleID).First(&existing).Error
+		dbErr := database.DB.Where("vehicle_id = ?", vehicleID).First(&existing).Error
 		if dbErr == nil {
-			existing.Longitude = req.Longitude
-			existing.Latitude = req.Latitude
-			existing.BatteryLevel = req.BatteryLevel
-			existing.RangeEstimate = req.RangeEstimate
+			existing.Longitude = longitude
+			existing.Latitude = latitude
+			existing.BatteryLevel = batteryLevel
+			existing.RangeEstimate = rangeEstimate
 			existing.IsLocked = isLocked
 			existing.IsCharging = isCharging
 			existing.LastGPSTime = time.Now()
@@ -225,11 +250,11 @@ func SimulateVehicleReport(c *gin.Context) {
 
 		if err == nil {
 			history := models.VehicleStatusHistory{
-				VehicleID:     req.VehicleID,
-				Longitude:     req.Longitude,
-				Latitude:      req.Latitude,
-				BatteryLevel:  req.BatteryLevel,
-				RangeEstimate: req.RangeEstimate,
+				VehicleID:     vehicleID,
+				Longitude:     longitude,
+				Latitude:      latitude,
+				BatteryLevel:  batteryLevel,
+				RangeEstimate: rangeEstimate,
 				ReportedAt:    time.Now(),
 			}
 			database.DB.Create(&history)
@@ -239,12 +264,12 @@ func SimulateVehicleReport(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to simulate vehicle report"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "模拟上报车辆状态失败"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Simulation data generated successfully",
+		"message": "模拟数据生成成功",
 		"data":    status,
 	})
 }

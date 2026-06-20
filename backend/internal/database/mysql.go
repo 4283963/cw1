@@ -22,12 +22,14 @@ func Init(cfg *config.Config) error {
 	)
 
 	var err error
-	DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
+		DB = nil
 		log.Printf("Warning: Failed to connect to MySQL: %v", err)
 		log.Println("Continuing with mock mode (data stored in memory)")
 		return nil
 	}
+	DB = db
 
 	err = DB.AutoMigrate(
 		&models.ACCommand{},

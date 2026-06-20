@@ -4,6 +4,8 @@ import (
 	"cw1/backend/internal/database"
 	"cw1/backend/internal/models"
 	"cw1/backend/internal/store"
+	"cw1/backend/internal/utils/flex"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -12,11 +14,11 @@ import (
 )
 
 type StartACRequest struct {
-	VehicleID  string  `json:"vehicle_id" binding:"required"`
-	UserID     string  `json:"user_id"`
-	TargetTemp float64 `json:"target_temp" binding:"required,min=16,max=32"`
-	Mode       string  `json:"mode"`
-	FanSpeed   int     `json:"fan_speed" binding:"min=1,max=7"`
+	VehicleID  string       `json:"vehicle_id" binding:"required"`
+	UserID     string       `json:"user_id"`
+	TargetTemp flex.Float64 `json:"target_temp"`
+	Mode       string       `json:"mode"`
+	FanSpeed   flex.Int     `json:"fan_speed"`
 }
 
 type StopACRequest struct {
@@ -26,7 +28,7 @@ type StopACRequest struct {
 }
 
 type UpdateACStatusRequest struct {
-	CommandID uint           `json:"command_id" binding:"required"`
+	CommandID flex.Uint      `json:"command_id"`
 	Status    models.ACStatus `json:"status" binding:"required"`
 	Message   string         `json:"message"`
 }
@@ -34,23 +36,40 @@ type UpdateACStatusRequest struct {
 func StartAC(c *gin.Context) {
 	var req StartACRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("参数解析失败: %v", err)})
+		return
+	}
+
+	targetTemp := req.TargetTemp.Value()
+	if targetTemp < 16 || targetTemp > 32 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target_temp 必须在 16 ~ 32 °C 之间"})
+		return
+	}
+
+	fanSpeed := req.FanSpeed.Value()
+	if fanSpeed == 0 {
+		fanSpeed = 3
+	}
+	if fanSpeed < 1 || fanSpeed > 7 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fan_speed 必须在 1 ~ 7 之间"})
 		return
 	}
 
 	if req.Mode == "" {
 		req.Mode = "auto"
 	}
-	if req.FanSpeed == 0 {
-		req.FanSpeed = 3
+	validModes := map[string]bool{"auto": true, "cool": true, "heat": true, "vent": true}
+	if !validModes[req.Mode] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mode 必须是 auto/cool/heat/vent 之一"})
+		return
 	}
 
 	cmd := &models.ACCommand{
 		VehicleID:  req.VehicleID,
 		UserID:     req.UserID,
-		TargetTemp: req.TargetTemp,
+		TargetTemp: targetTemp,
 		Mode:       req.Mode,
-		FanSpeed:   req.FanSpeed,
+		FanSpeed:   fanSpeed,
 		Status:     models.ACStatusPending,
 	}
 
@@ -62,12 +81,12 @@ func StartAC(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create AC command"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建空调指令失败"})
 		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message": "AC command created successfully",
+		"message": "空调指令创建成功",
 		"data":    cmd,
 	})
 }
@@ -75,7 +94,7 @@ func StartAC(c *gin.Context) {
 func StopAC(c *gin.Context) {
 	var req StopACRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("参数解析失败: %v", err)})
 		return
 	}
 
@@ -87,7 +106,7 @@ func StopAC(c *gin.Context) {
 		dbErr := database.DB.Where("vehicle_id = ?", req.VehicleID).
 			Order("created_at desc").First(&cmd).Error
 		if dbErr != nil && dbErr != gorm.ErrRecordNotFound {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query AC command"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询空调指令失败"})
 			return
 		}
 		if dbErr == nil {
@@ -102,13 +121,13 @@ func StopAC(c *gin.Context) {
 	}
 
 	if latestCmd == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No AC command found for vehicle"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到该车辆的空调指令"})
 		return
 	}
 
 	msg := req.Message
 	if msg == "" {
-		msg = "User stopped AC"
+		msg = "用户停止空调"
 	}
 
 	if database.DB != nil {
@@ -125,7 +144,7 @@ func StopAC(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "AC stopped successfully",
+		"message": "空调停止指令已发送",
 		"data":    latestCmd,
 	})
 }
@@ -133,7 +152,7 @@ func StopAC(c *gin.Context) {
 func GetACStatus(c *gin.Context) {
 	vehicleID := c.Param("vehicle_id")
 	if vehicleID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id 必填"})
 		return
 	}
 
@@ -145,7 +164,7 @@ func GetACStatus(c *gin.Context) {
 		dbErr := database.DB.Where("vehicle_id = ?", vehicleID).
 			Order("created_at desc").First(&cmd).Error
 		if dbErr != nil && dbErr != gorm.ErrRecordNotFound {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query AC command"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询空调状态失败"})
 			return
 		}
 		if dbErr == nil {
@@ -161,14 +180,14 @@ func GetACStatus(c *gin.Context) {
 
 	if latestCmd == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "No active AC command",
+			"message": "无活跃空调指令",
 			"data":    nil,
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Success",
+		"message": "查询成功",
 		"data":    latestCmd,
 	})
 }
@@ -176,7 +195,7 @@ func GetACStatus(c *gin.Context) {
 func GetACHistory(c *gin.Context) {
 	vehicleID := c.Param("vehicle_id")
 	if vehicleID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id 必填"})
 		return
 	}
 
@@ -196,12 +215,12 @@ func GetACHistory(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query AC history"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询空调历史失败"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Success",
+		"message": "查询成功",
 		"data":    commands,
 	})
 }
@@ -209,7 +228,7 @@ func GetACHistory(c *gin.Context) {
 func GetPendingACCommands(c *gin.Context) {
 	vehicleID := c.Param("vehicle_id")
 	if vehicleID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vehicle_id 必填"})
 		return
 	}
 
@@ -224,12 +243,12 @@ func GetPendingACCommands(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query pending commands"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询待执行指令失败"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Success",
+		"message": "查询成功",
 		"data":    commands,
 	})
 }
@@ -237,7 +256,13 @@ func GetPendingACCommands(c *gin.Context) {
 func UpdateACStatus(c *gin.Context) {
 	var req UpdateACStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("参数解析失败: %v", err)})
+		return
+	}
+
+	commandID := req.CommandID.Value()
+	if commandID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "command_id 必填且需为正整数"})
 		return
 	}
 
@@ -249,7 +274,7 @@ func UpdateACStatus(c *gin.Context) {
 	}
 
 	if !validStatuses[req.Status] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status 值无效"})
 		return
 	}
 
@@ -257,7 +282,7 @@ func UpdateACStatus(c *gin.Context) {
 	found := false
 
 	if database.DB != nil {
-		if dbErr := database.DB.First(&cmd, req.CommandID).Error; dbErr == nil {
+		if dbErr := database.DB.First(&cmd, commandID).Error; dbErr == nil {
 			updates := map[string]interface{}{
 				"status":  req.Status,
 				"message": req.Message,
@@ -268,21 +293,21 @@ func UpdateACStatus(c *gin.Context) {
 				updates["stop_time"] = dbNow()
 			}
 			database.DB.Model(&cmd).Updates(updates)
-			database.DB.First(&cmd, req.CommandID)
+			database.DB.First(&cmd, commandID)
 			found = true
 		}
 	} else {
-		if err := store.UpdateACCommandStatus(req.CommandID, req.Status, req.Message); err == nil {
+		if err := store.UpdateACCommandStatus(commandID, req.Status, req.Message); err == nil {
 			cmds, _ := store.GetACCommandsByVehicleID(cmd.VehicleID)
 			for _, c := range cmds {
-				if c.ID == req.CommandID {
+				if c.ID == commandID {
 					cmd = c
 					found = true
 					break
 				}
 			}
 			if !found {
-				cmd.ID = req.CommandID
+				cmd.ID = commandID
 				cmd.Status = req.Status
 				cmd.Message = req.Message
 				found = true
@@ -291,12 +316,12 @@ func UpdateACStatus(c *gin.Context) {
 	}
 
 	if !found {
-		c.JSON(http.StatusNotFound, gin.H{"error": "AC command not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到该空调指令"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "AC status updated successfully",
+		"message": "空调状态更新成功",
 		"data":    cmd,
 	})
 }
