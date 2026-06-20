@@ -60,3 +60,21 @@ body {
   border-radius: 1rem;
   background: #1e293b !important;
 }
+
+.low-battery-blink {
+  animation: low-battery-blink 1s ease-in-out infinite;
+  display: inline-block;
+}
+
+@keyframes low-battery-blink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: drop-shadow(0 0 6px rgba(234, 179, 8, 0.8));
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.85);
+    filter: drop-shadow(0 0 2px rgba(234, 179, 8, 0.3));
+  }
+}

@@ -21,24 +21,44 @@ import {
   VehicleStatusHistory,
 } from '../types'
 
-const carIcon = L.divIcon({
-  className: 'custom-car-marker',
-  html: `<div style="
-    background: linear-gradient(135deg, #0ea5e9, #0284c7);
-    border-radius: 50%;
-    width: 44px;
-    height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 22px;
-    box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.2), 0 4px 12px rgba(0,0,0,0.3);
-    border: 2px solid rgba(255,255,255,0.9);
-  ">🚗</div>`,
-  iconSize: [44, 44],
-  iconAnchor: [22, 22],
-  popupAnchor: [0, -22],
-})
+const LOW_BATTERY_THRESHOLD = 15
+
+function buildCarIcon(batteryLevel: number | null) {
+  const lowBattery = batteryLevel !== null && batteryLevel < LOW_BATTERY_THRESHOLD
+  return L.divIcon({
+    className: 'custom-car-marker',
+    html: `
+      <div style="position: relative; width: 44px; height: 44px;">
+        <div style="
+          background: linear-gradient(135deg, ${lowBattery ? '#eab308, #ca8a04' : '#0ea5e9, #0284c7'});
+          border-radius: 50%;
+          width: 44px;
+          height: 44px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 22px;
+          box-shadow: 0 0 0 4px rgba(${lowBattery ? '234, 179, 8' : '14, 165, 233'}, 0.2), 0 4px 12px rgba(0,0,0,0.3);
+          border: 2px solid rgba(255,255,255,0.9);
+        ">🚗</div>
+        ${
+          lowBattery
+            ? `<div class="low-battery-blink" style="
+                position: absolute;
+                top: -10px;
+                right: -10px;
+                font-size: 20px;
+                line-height: 1;
+              ">🔋</div>`
+            : ''
+        }
+      </div>
+    `,
+    iconSize: [44, 44],
+    iconAnchor: [22, 22],
+    popupAnchor: [0, -22],
+  })
+}
 
 function AutoCenter({ position }: { position: [number, number] }) {
   const map = useMap()
@@ -202,6 +222,16 @@ export default function VehicleFinder() {
     return `${(dist / 1000).toFixed(2)} 公里`
   }
 
+  const handleNavigate = () => {
+    if (!status) {
+      showToast('error', '暂无车辆位置数据，无法导航')
+      return
+    }
+    const { longitude, latitude } = status
+    const amapUrl = `https://uri.amap.com/marker?position=${longitude},${latitude}&name=${encodeURIComponent('我的爱车')}&src=ev-connect&coordinate=gaode&callnative=1`
+    window.open(amapUrl, '_blank', 'noopener,noreferrer')
+  }
+
   return (
     <div className="space-y-6">
       {toast && (
@@ -227,6 +257,13 @@ export default function VehicleFinder() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={handleNavigate}
+            disabled={!status}
+            className="px-4 py-2 rounded-xl bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-orange-500 hover:to-yellow-500 text-white text-sm font-medium shadow-lg shadow-yellow-500/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <span>🧭</span> 一键导航到车辆
+          </button>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-500">车辆ID:</span>
             <input
@@ -274,6 +311,12 @@ export default function VehicleFinder() {
                 />
               </div>
             </div>
+            {status.battery_level < LOW_BATTERY_THRESHOLD && (
+              <div className="mt-3 px-3 py-2 rounded-lg bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 text-xs flex items-center gap-2">
+                <span className="low-battery-blink">⚠️</span>
+                电量过低，建议尽快充电
+              </div>
+            )}
           </div>
           <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 p-5">
             <div className="flex items-center gap-2 text-slate-400 text-xs mb-2">
@@ -289,6 +332,12 @@ export default function VehicleFinder() {
               <span>📍</span> 距离中心
             </div>
             <div className="text-3xl font-bold text-white">{getDistanceFromCenter()}</div>
+            <button
+              onClick={handleNavigate}
+              className="mt-3 w-full py-2 rounded-lg bg-gradient-to-r from-yellow-500/20 to-orange-500/20 hover:from-yellow-500/30 hover:to-orange-500/30 border border-yellow-500/40 text-yellow-400 text-sm font-medium transition-all flex items-center justify-center gap-1.5"
+            >
+              <span>🧭</span> 一键导航
+            </button>
           </div>
           <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 p-5">
             <div className="flex items-center gap-2 text-slate-400 text-xs mb-2">
@@ -355,7 +404,7 @@ export default function VehicleFinder() {
               />
             )}
             {status && (
-              <Marker position={position} icon={carIcon}>
+              <Marker position={position} icon={buildCarIcon(status.battery_level)}>
                 <Popup>
                   <div className="text-sm p-1 min-w-[200px]">
                     <div className="font-bold text-ev-primary text-base mb-2">
